@@ -1,0 +1,120 @@
+﻿cc -std=c99 -Wall -Wextra -O2 -Iinclude -c src/mqtt_codec.c -o build/mqtt_codec.o
+cc -std=c99 -Wall -Wextra -O2 -Iinclude -c src/ota_verify.c -o build/ota_verify.o
+cc -std=c99 -Wall -Wextra -O2 -Iinclude -c src/power_policy.c -o build/power_policy.o
+cc -std=c99 -Wall -Wextra -O2 -Iinclude -c tests/test_iot.c -o build/test_iot.o
+cc -std=c99 -Wall -Wextra -O2 -Iinclude build/mqtt_codec.o build/ota_verify.o build/power_policy.o build/test_iot.o -o build/iot_tests.exe
+=== 物联网协议与 OTA 逻辑层 · 自检测试（MQTT / OTA / 深睡策略） ===
+
+[MQTT 剩余长度（变长整数）编解码]
+  PASS  长度 0 编码为 1 字节
+  PASS  长度 0 解码还原一致
+  PASS  长度 127 编码为 1 字节
+  PASS  长度 127 解码还原一致
+  PASS  长度 128 编码为 2 字节
+  PASS  长度 128 解码还原一致
+  PASS  长度 16383 编码为 2 字节
+  PASS  长度 16383 解码还原一致
+  PASS  长度 16384 编码为 3 字节
+  PASS  长度 16384 解码还原一致
+  PASS  长度 2097151 编码为 3 字节
+  PASS  长度 2097151 解码还原一致
+  PASS  长度 2097152 编码为 4 字节
+  PASS  长度 2097152 解码还原一致
+  PASS  长度 268435455 编码为 4 字节
+  PASS  长度 268435455 解码还原一致
+  PASS  超过 4 字节上限 → 编码失败
+  PASS  非法 5 字节变长长度 → 解码失败
+
+[MQTT PUBLISH 编解码（QoS0 / QoS1）]
+  PASS  QoS0 PUBLISH 编码成功
+  PASS  QoS0 PUBLISH 解码成功
+  PASS  报文类型与 QoS 正确
+  PASS  主题与长度正确
+  PASS  payload（含 0x00/0xFF 边界字节）一致
+  PASS  QoS1 PUBLISH 编码成功
+  PASS  QoS1 PUBLISH 解码成功
+  PASS  QoS1 携带包 ID 0x1234
+  PASS  QoS1 payload 一致
+  PASS  QoS1 但包 ID 为 0 → 参数错误
+  PASS  QoS2 未实现 → 拒绝
+  PASS  空主题 → 拒绝
+
+[MQTT 报文完整性校验]
+  PASS  重新编码一条 PUBLISH
+  PASS  长度少一字节 → 判定报文残缺（丢弃整包）
+  PASS  剩余长度与实到字节数不符 → 拒绝
+
+[MQTT 定长报文编码（CONNACK / PUBACK / PINGREQ）]
+  PASS  CONNACK 编码 = 20 02 00 00
+  PASS  PUBACK 编码 = 40 02 12 34
+  PASS  PINGREQ 编码 = C0 00
+
+[QoS1 发送窗口（包 ID 分配 / 在途管理 / 背压）]
+  PASS  首个包 ID 从 1 开始
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  登记在途报文
+  PASS  窗口已满
+  PASS  窗口满 → 背压（拒绝新报文）
+  PASS  收到 PUBACK 释放包 ID 3
+  PASS  在途数量减一
+  PASS  重复 PUBACK → 参数错误
+  PASS  未知 PUBACK → 参数错误
+  PASS  包 ID 到 65535 后回绕到 1（跳过 0）
+
+[OTA 正常升级（头校验 → 顺序写入 → CRC32 → 确认生效）]
+  PASS  初始运行版本正确
+  PASS  镜像头校验通过，开始接收
+  PASS  进入接收态
+  PASS  写入第 1 片（100 字节）
+  PASS  写入第 2 片（200 字节）
+  PASS  累计接收长度正确
+  PASS  全镜像 CRC32 校验通过
+  PASS  进入待确认态（boot_pending）
+  PASS  未确认前仍运行旧版本
+  PASS  自检通过 → 确认升级
+  PASS  确认后运行新版本
+  PASS  新槽内容与下载镜像逐字节一致
+
+[OTA 异常路径（坏 CRC / 乱序 / 越界 / 坏头）]
+  PASS  坏 CRC 镜像的头仍然合法（CRC 在结尾判）
+  PASS  写入第 1 片
+  PASS  写入第 2 片
+  PASS  结尾 CRC 不匹配 → 拒绝生效
+  PASS  状态置为 FAILED
+  PASS  写入第 1 片
+  PASS  跳过第 2 片（乱序）→ 拒绝
+  PASS  重复写同一片 → 拒绝
+  PASS  越过镜像长度 → 拒绝
+  PASS  magic 不匹配 → 拒绝
+  PASS  镜像大于分区 → 拒绝
+
+[OTA 断电续传与回滚]
+  PASS  写入 100 字节后“断电”
+  PASS  接收进度保留（可从 100 偏移续传）
+  PASS  续传剩余 200 字节
+  PASS  续传后 CRC 校验通过
+  PASS  模拟新镜像自检失败 → 回滚
+  PASS  状态为 ROLLED_BACK
+  PASS  回滚后仍运行旧版本（业务不受影响）
+
+[深睡策略（Activity / Light-sleep / Deep-sleep 分级）]
+  PASS  500 ms 无活动 → 保持 ACTIVE
+  PASS  累计 1100 ms → 进入 Light-sleep
+  PASS  累计超 10 s → 进入 Deep-sleep
+  PASS  深睡次数累加
+  PASS  有活动 → 空闲计时清零
+  PASS  有数据待上报 → 禁止休眠
+  PASS  待发数据时立即唤醒
+  PASS  断网 → 保持唤醒以便重连
+  PASS  断网重连周期 200 ms
+  PASS  正常心跳上报周期 5 s
+
+------------------------------------------------------------
+用例总数 92，通过 92，失败 0
+RESULT: ALL PASS
